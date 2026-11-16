@@ -1,0 +1,53 @@
+{
+  "name": "@local/dsh-agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared agent runtimes, isolated tasks and Factory workflows for DSH",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./types": "./types.d.ts"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "types.d.ts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13",
+    "dsh": ">=0.2.2-rc.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-tool"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check index.js && node --check client.js && node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bondiano/dsh-agent-runtime.git"
+  },
+  "homepage": "https://github.com/bondiano/dsh-agent-runtime#readme",
+  "bugs": {
+    "url": "https://github.com/bondiano/dsh-agent-runtime/issues"
+  }
+}
