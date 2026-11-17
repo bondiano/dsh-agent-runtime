@@ -81,3 +81,10 @@ Cordis integration test belongs to workstation.
 Tests use fake providers/processes and temporary Git repositories; they do not
 consume model quota. A successful non-inference protocol handshake does not prove
 subscription billing, live tool approvals or billable Mission execution.
+
+## Model catalog
+
+`catalog(runtime)` lists model ids with a 60-second per-runtime cache and backs
+the `runtime_models` chat tool through optional `catalog()` methods on the
+registered adapters. The role-team settings picker uses it for Cursor and
+Factory Droid model ids.

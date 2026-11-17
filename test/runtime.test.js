@@ -16,6 +16,17 @@ function fixture(saved = [], overrides = {}) {
 }
 const collect = async stream => { const rows = []; for await (const row of stream) rows.push(row); return rows }
 
+test('catalog caches adapter models and treats a runtime without a catalog as empty', async () => {
+  const { runtime, adapter } = fixture()
+  let calls = 0
+  adapter.catalog = async () => { calls++; return { models: [{ id: 'm1', name: 'One' }] } }
+  assert.deepEqual(await runtime.catalog('fake'), { models: [{ id: 'm1', name: 'One' }] })
+  assert.deepEqual(await runtime.catalog('fake'), { models: [{ id: 'm1', name: 'One' }] })
+  assert.equal(calls, 1)
+  const bare = fixture()
+  assert.deepEqual(await bare.runtime.catalog('fake'), { models: [] })
+})
+
 test('session identity is independent from provider/run identity; usage can be null', async () => {
   const { runtime } = fixture()
   const session = await runtime.create({ runtime: 'fake', cwd: '/source' })
