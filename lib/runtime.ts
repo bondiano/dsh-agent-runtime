@@ -1,12 +1,103 @@
 import { randomUUID } from 'node:crypto'
 import { bridgeMessage } from './context.js'
+import { initialStatus, nextStatus } from './session.machine.js'
 
 const clone = value => JSON.parse(JSON.stringify(value))
 const sessionOptions = options => Object.fromEntries(
   ['model', 'provider', 'reasoningEffort', 'specModel', 'autonomy', 'onlyTools', 'workerModel', 'validatorModel']
     .filter(key => options[key] !== undefined).map(key => [key, options[key]]))
 
+/** One event row appended to a session feed. */
+interface SessionEventRow { type: string; sequence: number; [key: string]: unknown }
+
+/** Isolated worktree info produced by `workspaces.prepare`. */
+interface WorkspaceInfo { cwd: string; source: string; git?: boolean; [key: string]: unknown }
+
+/** Session rows as this host persists them. */
+interface RuntimeSessionRow {
+  id: string
+  runtime: string
+  providerSessionId: string
+  status: string
+  cwd: string
+  workspace: WorkspaceInfo
+  mode: string
+  settings: Record<string, unknown>
+  sequence: number
+  events: SessionEventRow[]
+  usage: unknown
+  tasks: Record<string, object>
+  ownerSessionId?: string | null
+  activeRunId?: string
+  patchPath?: string
+  [key: string]: unknown
+}
+
+/** Host persistence slice the runtime drives. */
+interface RuntimeStoreLike {
+  load(): Promise<RuntimeSessionRow[]>
+  save(sessions: RuntimeSessionRow[]): Promise<unknown>
+  artifact(sessionId: string, name: string, text: string): Promise<string>
+}
+
+/** Worktree management slice the runtime drives. */
+interface WorkspacesLike {
+  prepare(id: string, options: unknown): Promise<WorkspaceInfo>
+  acquire(session: RuntimeSessionRow): () => void
+  patch(session: RuntimeSessionRow): Promise<string | null>
+}
+
+/** DSH user-question bridge; undefined outside an interactive host. */
+type QuestionBridge = (request: { title?: string; text?: string; context?: RunContext }) => Promise<boolean>
+
+/** Parent agent reference forwarded to provider adapters. */
+interface ParentRef { sessionId?: string; session?: { id?: string }; [key: string]: unknown }
+
+/** Caller-supplied run context. */
+interface RunContext { parent?: ParentRef; signal?: AbortSignal }
+
+/** One event row streamed by a provider adapter. */
+interface ProviderEvent {
+  type: string
+  status?: string
+  text?: string
+  message?: string
+  raw?: { message?: string }
+  [key: string]: unknown
+}
+
+/** Provider adapter contract this host drives (see types.d.ts). */
+interface RuntimeAdapter {
+  id: string
+  capabilities(): unknown | Promise<unknown>
+  create(options: unknown): Promise<{ id: string }>
+  resume(providerSessionId: string, options: unknown): Promise<unknown>
+  send(providerSessionId: string, message: unknown, context: unknown): AsyncIterable<ProviderEvent>
+  cancel(providerSessionId: string, runId: string): Promise<void>
+  close(providerSessionId: string): Promise<void>
+  getUsage(providerSessionId: string): unknown
+  catalog?(options: unknown): Promise<{ models: unknown[] }>
+  respond?(providerSessionId: string, requestId: string, answer: unknown): Promise<void>
+  fork?(providerSessionId: string, options: unknown): Promise<{ id: string }>
+  updateSettings?(providerSessionId: string, settings: unknown): Promise<void>
+  dispose?(): void | Promise<void>
+}
+
+/** Provider options accepted by `create`. */
+interface CreateOptions { cwd?: string; runtime?: string; mode?: string; autonomy?: string; [key: string]: unknown }
+
 export class AgentRuntime {
+  store: RuntimeStoreLike
+  workspaces: WorkspacesLike
+  question: QuestionBridge | undefined
+  adapters: Map<string, RuntimeAdapter>
+  sessions: Map<string, RuntimeSessionRow>
+  live: Map<string, { runId: string; controller: AbortController }>
+  parents: Map<string, ParentRef>
+  missionCredits: Set<string>
+  operations: Set<string>
+  catalogs: Map<string, { at: number; value: { models: unknown[] } }>
+  ready: Promise<void>
   constructor({ store, workspaces, question }) {
     this.store = store; this.workspaces = workspaces; this.question = question
     this.adapters = new Map(); this.sessions = new Map(); this.live = new Map(); this.parents = new Map(); this.missionCredits = new Set(); this.operations = new Set(); this.catalogs = new Map()
@@ -14,7 +105,10 @@ export class AgentRuntime {
   }
   async restore() {
     for (const session of await this.store.load()) {
-      if (session.status !== 'closed') session.status = 'disconnected'
+      if (session.status !== 'closed') {
+        try { session.status = nextStatus(session.status, 'RESTORE') }
+        catch { session.status = 'disconnected' }
+      }
       for (const event of session.events ?? []) if (['permission', 'ask-user'].includes(event.type)) event.expired = true
       delete session.activeRunId
       this.sessions.set(session.id, session)
@@ -26,8 +120,8 @@ export class AgentRuntime {
     this.adapters.set(adapter.id, adapter)
     return () => { if (this.adapters.get(adapter.id) === adapter) this.adapters.delete(adapter.id) }
   }
-  adapter(id) { const adapter = this.adapters.get(id); if (!adapter) throw new Error(`Runtime unavailable: ${id}`); return adapter }
-  session(id) { const session = this.sessions.get(id); if (!session) throw new Error('Unknown runtime session'); return session }
+  adapter(id): RuntimeAdapter { const adapter = this.adapters.get(id); if (!adapter) throw new Error(`Runtime unavailable: ${id}`); return adapter }
+  session(id): RuntimeSessionRow { const session = this.sessions.get(id); if (!session) throw new Error('Unknown runtime session'); return session }
   async list() {
     await this.ready
     return { sessions: clone([...this.sessions.values()]), runtimes: await Promise.all([...this.adapters.values()].map(async adapter => ({ id: adapter.id, capabilities: await adapter.capabilities() }))) }
@@ -44,7 +138,7 @@ export class AgentRuntime {
     this.catalogs.set(runtime, { at: Date.now(), value })
     return value
   }
-  async create(options = {}, context = {}) {
+  async create(options: CreateOptions = {}, context: RunContext = {}) {
     await this.ready
     if (typeof options.cwd !== 'string' || !options.cwd.trim()) throw new Error('cwd is required')
     const runtime = options.runtime ?? 'native'
@@ -61,14 +155,14 @@ export class AgentRuntime {
     const provider = await adapter.create({ ...settings, missionConfirmed: mode === 'mission', cwd: workspace.cwd, parent: context.parent })
     const session = { id, runtime, providerSessionId: provider.id, cwd: workspace.cwd, workspace, mode, settings,
       ownerSessionId: context.parent?.sessionId ?? context.parent?.session?.id ?? null,
-      status: 'idle', sequence: 0, events: [], usage: null, tasks: {} }
+      status: initialStatus(), sequence: 0, events: [], usage: null, tasks: {} }
     this.sessions.set(id, session)
     if (mode === 'mission') this.missionCredits.add(id)
     if (context.parent) this.parents.set(id, context.parent)
     try { await this.persist() }
     catch (error) {
       await adapter.close(provider.id).catch(() => {})
-      session.status = 'failed'
+      session.status = nextStatus(session.status, 'FAIL')
       throw error
     }
     return clone(session)
@@ -78,7 +172,7 @@ export class AgentRuntime {
     const answer = await this.question({ title: 'Factory Mission', text: `Run Mission in ${options.cwd}? Autonomy: high. Factory Extra Usage must already be enabled and may incur charges. Models: ${options.model ?? 'Factory default'}; workers: ${options.workerModel ?? 'default'}; validators: ${options.validatorModel ?? 'default'}.`, context })
     if (answer !== true) throw new Error('Mission was not confirmed')
   }
-  async resume(id, context = {}) {
+  async resume(id, context: RunContext = {}) {
     await this.ready
     const session = this.session(id)
     if (this.live.has(id) || this.operations.has(id)) throw new Error('Session is busy')
@@ -88,7 +182,7 @@ export class AgentRuntime {
     await this.adapter(session.runtime).resume(session.providerSessionId, { ...session.settings, missionConfirmed: session.mode === 'mission', cwd: session.cwd, parent: context.parent })
     if (session.mode === 'mission') this.missionCredits.add(id)
     if (context.parent) this.parents.set(id, context.parent)
-    session.status = 'idle'
+    session.status = nextStatus(session.status, 'RESUME')
     await this.persist()
     return clone(session)
     } finally { this.operations.delete(id) }
@@ -109,7 +203,7 @@ export class AgentRuntime {
     await this.persist()
     return row
   }
-  async *send(id, message, context = {}) {
+  async *send(id, message, context: RunContext = {}) {
     await this.ready
     message = await bridgeMessage(message)
     const session = this.session(id)
@@ -126,20 +220,20 @@ export class AgentRuntime {
     const release = this.workspaces.acquire(session)
     this.live.set(id, { runId, controller })
     delete session.patchPath
-    session.activeRunId = runId; session.status = 'running'
+    session.activeRunId = runId; session.status = nextStatus(session.status, 'SEND')
     const parent = context.parent ?? this.parents.get(id)
     try {
       yield await this.append(session, runId, { type: 'started' })
       for await (const event of adapter.send(session.providerSessionId, message, { runId, signal, parent, policy: 'allow' })) {
         if (event.type === 'error') throw new Error(event.text ?? event.message ?? event.raw?.message ?? 'Runtime failed')
         if (event.type === 'cancelled') controller.abort()
-        if (event.type === 'completed' && ['cancelled', 'aborted'].includes(event.status)) controller.abort()
-        if (event.type === 'completed' && ['failed', 'error'].includes(event.status)) throw new Error(`Runtime ended: ${event.status}`)
-        if (event.type === 'permission' || event.type === 'ask-user') session.status = 'waiting'
-        if (event.type === 'permission-resolved') session.status = 'running'
+        if (event.type === 'completed' && ['cancelled', 'aborted'].includes(event.status ?? '')) controller.abort()
+        if (event.type === 'completed' && ['failed', 'error'].includes(event.status ?? '')) throw new Error(`Runtime ended: ${event.status}`)
+        if (event.type === 'permission' || event.type === 'ask-user') session.status = nextStatus(session.status, 'WAITING')
+        if (event.type === 'permission-resolved') session.status = nextStatus(session.status, 'RESUME_RUN')
         yield await this.append(session, runId, event)
       }
-      session.status = signal.aborted ? 'cancelled' : 'completed'
+      session.status = nextStatus(session.status, signal.aborted ? 'CANCEL' : 'COMPLETE')
       session.usage = await Promise.resolve(adapter.getUsage(session.providerSessionId)).catch(() => null)
       if (session.mode !== 'review' && session.mode !== 'spec') {
         const patch = await this.workspaces.patch(session)
@@ -150,11 +244,11 @@ export class AgentRuntime {
       }
       yield await this.append(session, runId, { type: 'settled', status: session.status })
     } catch (error) {
-      session.status = signal.aborted ? 'cancelled' : 'failed'
-      yield await this.append(session, runId, { type: 'error', text: error.message })
+      session.status = nextStatus(session.status, signal.aborted ? 'CANCEL' : 'FAIL')
+      yield await this.append(session, runId, { type: 'error', text: error instanceof Error ? error.message : String(error) })
       throw error
     } finally {
-      for (const event of session.events) if (event.runId === runId && ['permission', 'ask-user'].includes(event.type)) event.expired = true
+      for (const event of session.events) if (event.runId === runId && ['permission', 'ask-user'].includes(event.type)) event.resolved = true
       delete session.activeRunId; this.live.delete(id); release(); await this.persist()
     }
   }
@@ -166,11 +260,12 @@ export class AgentRuntime {
   }
   async close(id) {
     const session = this.session(id)
+    if (session.status === 'closed') return clone(session)
     if (this.live.has(id) || this.operations.has(id)) throw new Error('Cancel the active run first')
     this.operations.add(id)
     try {
     await this.adapter(session.runtime).close(session.providerSessionId)
-    session.status = 'closed'; this.parents.delete(id); await this.persist()
+    session.status = nextStatus(session.status, 'CLOSE'); this.parents.delete(id); await this.persist()
     } finally { this.operations.delete(id) }
   }
   async respond(id, requestId, answer) {
@@ -180,7 +275,7 @@ export class AgentRuntime {
     if (!adapter.respond) throw new Error('Runtime does not support responses')
     await adapter.respond(session.providerSessionId, requestId, answer)
     for (const event of session.events) if (event.requestId === requestId) event.resolved = true
-    session.status = 'running'; await this.persist()
+    session.status = nextStatus(session.status, 'ANSWER'); await this.persist()
   }
   async fork(id, options = {}) {
     const session = this.session(id); const adapter = this.adapter(session.runtime)
@@ -189,10 +284,10 @@ export class AgentRuntime {
     this.operations.add(id)
     try {
     const provider = await adapter.fork(session.providerSessionId, options)
-    const child = { ...clone(session), id: randomUUID(), providerSessionId: provider.id, status: 'idle', sequence: 0, events: [], tasks: {}, patchPath: undefined }
+    const child = { ...clone(session), id: randomUUID(), providerSessionId: provider.id, status: initialStatus(), sequence: 0, events: [], tasks: {}, patchPath: undefined }
     // A fork shares its source worktree and therefore its writer lock.
     this.sessions.set(child.id, child)
-    if (this.parents.has(id)) this.parents.set(child.id, this.parents.get(id))
+    if (this.parents.has(id)) this.parents.set(child.id, this.parents.get(id)!)
     await this.persist(); return clone(child)
     } finally { this.operations.delete(id) }
   }

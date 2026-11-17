@@ -1,6 +1,9 @@
 import { readFile } from 'node:fs/promises'
 
-export async function runToEnd(service, id, text, context) {
+/** Result of driving one session to a settled state. */
+export interface RunResult { sessionId: string; text: string; status: string; findings?: unknown }
+
+export async function runToEnd(service, id, text, context): Promise<RunResult> {
   let output = ''
   let specPlan
   for await (const event of service.send(id, typeof text === 'string' ? { text } : text, context)) {

@@ -14,7 +14,7 @@ test('spec artifact is authoritative and is not duplicated by streamed text', as
 
 test('tools render host content blocks from canonical output, not input arguments', () => {
   const tools = runtimeTools({}, {})
-  const tool = tools.find(row => row.name === 'runtime_send')
+  const tool = tools.find(row => row.name === 'runtime_send')!
   assert.deepEqual(tool.output.render({ text: 'prompt' }, { text: 'result' }), [{ type: 'text', text: 'result' }])
 })
 
@@ -24,7 +24,7 @@ test('apply rechecks result after real user confirmation', async () => {
   const service = { session: () => session, live: new Map(), operations: new Set(),
     question: async () => { session.patchPath = '/new.patch'; return true },
     workspaces: { applyResult: async () => { applied = true } } }
-  const tool = runtimeTools(service, {}).find(row => row.name === 'runtime_apply')
+  const tool = runtimeTools(service, {}).find(row => row.name === 'runtime_apply')!
   await assert.rejects(tool.execute({ sessionId: session.id }, {}), /changed during confirmation/)
   assert.equal(applied, false)
 })
@@ -32,7 +32,7 @@ test('apply rechecks result after real user confirmation', async () => {
 test('cancelled review preserves stop reason and does not parse a partial report', async () => {
   const service = { create: async () => ({ id: 'session', workspace: { diff: 'diff', diffHash: 'hash' } }),
     session: () => ({ status: 'cancelled' }), async *send() { yield { type: 'text', text: 'partial' } } }
-  const tool = runtimeTools(service, {}).find(row => row.name === 'droid_review')
+  const tool = runtimeTools(service, {}).find(row => row.name === 'droid_review')!
   assert.deepEqual(await tool.execute({ cwd: '/project', text: 'review' }, {}), { sessionId: 'session', text: 'partial', status: 'cancelled' })
 })
 

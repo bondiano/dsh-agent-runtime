@@ -9,11 +9,37 @@ import { registerRpc } from './lib/rpc.js'
 
 export { AgentRuntime } from './lib/runtime.js'
 export const inject = ['tools']
-export async function apply(ctx) {
+
+/** DSH user-question service used for Mission and patch confirmations. */
+interface UserQuestionsService {
+  ask(request: unknown): Promise<{ answers?: { id: string; selected?: string[] }[] }>
+}
+
+/** Context a confirmation question may carry. */
+interface QuestionContext { parent?: unknown; signal?: AbortSignal }
+
+/** System-prompt registry injected as an `inject` scope service. */
+interface SystemPromptScope {
+  get(name: 'systemPrompt'): { section(options: { name: string; order: number; text: string }): unknown }
+  effect(callback: () => unknown, label?: string): unknown
+}
+
+/** Cordis context slice used by this plugin; unlisted services are not touched. */
+export interface HostContext {
+  get(name: 'profileContext'): { dir?: string } | undefined
+  get(name: 'userQuestions'): UserQuestionsService | undefined
+  provide(name: 'agentRuntime', service: AgentRuntime): unknown
+  effect(callback: () => unknown, label?: string): unknown
+  inject(names: string[], setup: (scope: SystemPromptScope) => unknown): unknown
+  tools: { register(tool: unknown): unknown }
+  logger?: { warn?(message: string): unknown }
+}
+
+export async function apply(ctx: HostContext) {
   const profile = ctx.get('profileContext')?.dir ?? process.env.DSH_PROFILE_DIR ?? 'default'
   const scope = createHash('sha256').update(profile).digest('hex').slice(0, 16)
   const directory = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'plugins', 'agent-runtime', scope)
-  const question = async ({ title, text, context = {} }) => {
+  const question = async ({ title, text, context = {} }: { title: string; text: string; context?: QuestionContext }) => {
     const questions = ctx.get('userQuestions')
     if (!questions?.ask) throw new Error('DSH user-question service unavailable')
     const result = await questions.ask({ questions: [{ id: 'runtime-confirm', header: title, question: text,
@@ -29,7 +55,7 @@ export async function apply(ctx) {
   registerRpc(ctx, service, (id, text) => {
     if (starting.has(id)) throw new Error('Session is busy')
     starting.add(id)
-    void runToEnd(service, id, text, {}).catch(error => ctx.logger?.warn?.(`runtime ${id}: ${error.message}`)).finally(() => starting.delete(id))
+    void runToEnd(service, id, text, {}).catch(error => ctx.logger?.warn?.(`runtime ${id}: ${error instanceof Error ? error.message : String(error)}`)).finally(() => starting.delete(id))
   })
   ctx.inject(['systemPrompt'], scope => scope.effect(() => scope.get('systemPrompt').section({
     name: 'tool:agent-runtime', order: 2820,

@@ -1,8 +1,117 @@
 /** Runtime control surface; all mutations use DSH's authenticated RPC channel. */
+
+/** One selectable option of a pending decision. */
+interface DecisionOption { label?: string; name?: string; value?: string; id?: string }
+
+/** One question of a pending ask-user decision. */
+interface DecisionQuestion { question: string }
+
+/** One event row replayed from a runtime session feed. */
+interface RuntimeEvent {
+  type: string
+  sequence: number
+  runId?: string
+  id?: string
+  taskId?: string
+  requestId?: string
+  resolved?: boolean
+  expired?: boolean
+  text?: string
+  status?: string
+  kind?: string
+  path?: string
+  usage?: unknown
+  task?: RuntimeTask
+  options?: DecisionOption[]
+  questions?: DecisionQuestion[]
+  raw?: { options?: DecisionOption[]; questions?: DecisionQuestion[]; params?: unknown; message?: string }
+  [key: string]: unknown
+}
+
+/** One merged Mission task row. */
+interface RuntimeTask {
+  id?: string
+  taskId?: string
+  sequence?: number
+  title?: string
+  text?: string
+  state?: string
+  status?: string
+  parentId?: string
+  dependsOn?: string[]
+  dependencies?: string[]
+  [key: string]: unknown
+}
+
+/** Session row as the `list` and `events` RPCs return it. */
+interface RuntimeSessionRow {
+  id: string
+  runtime: string
+  status: string
+  cwd: string
+  activeRunId?: string
+  usage?: unknown
+  tasks?: Record<string, RuntimeTask>
+  [key: string]: unknown
+}
+
+interface RuntimeListResult { sessions: RuntimeSessionRow[]; runtimes: (string | { id: string })[] }
+interface RuntimeEventsResult { events?: RuntimeEvent[]; session?: RuntimeSessionRow | null }
+interface RpcResponse<T> { ok: boolean; value: T; error?: { message?: string } }
+
+/** DSH authenticated RPC channel. */
+interface RpcConnection { call<T>(path: string, method: string, data?: object): Promise<RpcResponse<T>> }
+
+type Translate = (key: string) => string
+
+/** React surface the panel uses; DSH injects the real module. */
+interface ReactModule {
+  createElement(type: unknown, props?: unknown, ...children: unknown[]): unknown
+  useState<S>(initial: S): [S, (value: S | ((previous: S) => S)) => void]
+  useEffect(setup: () => void | (() => void), deps?: unknown[]): void
+}
+
+function isReactModule(value: unknown): value is ReactModule {
+  return typeof value === 'object' && value !== null && 'createElement' in value && 'useState' in value && 'useEffect' in value
+}
+
+/** Locale dictionaries service. */
+interface LocaleService {
+  register(namespace: string, dictionaries: Record<string, Record<string, string>>): unknown
+  bind(namespace: string): Translate
+}
+
+/** DSH slot registry the panels mount into. */
+interface SlotsService {
+  inject(name: string, register: () => unknown): void
+  register(meta: Record<string, unknown>, component: unknown): unknown
+}
+
+/** Cordis client context slice the panel uses. */
+interface ClientContext {
+  effect(callback: () => unknown, label?: string): unknown
+  get(name: 'connection'): { rpc?: RpcConnection } | undefined
+  locale: LocaleService
+  slots: SlotsService
+}
+/** The client plugin this bundle installs. */
+interface ClientPlugin {
+  taskRows(session: RuntimeSessionRow | null | undefined, events: RuntimeEvent[]): RuntimeTask[]
+  pendingRequests(session: RuntimeSessionRow | null | undefined, events: RuntimeEvent[], resolved: (string | undefined)[]): RuntimeEvent[]
+  inject: string[]
+  apply(ctx: ClientContext): void
+}
+
+interface ModuleBundle { id: string; factory(require: (id: string) => unknown): ClientPlugin }
+interface ModuleLoader { load(bundle: ModuleBundle): unknown }
+interface Window { __ModuleLoader__: ModuleLoader }
+
 window.__ModuleLoader__.load({
   id: '@local/dsh-agent-runtime',
   factory(require) {
-    const React = require('react')
+    const react = require('react')
+    if (!isReactModule(react)) throw new Error('The agent-runtime panel requires React')
+    const React = react
     const h = React.createElement
     const NS = 'agentRuntime'
     const en = { title: 'Agent runtimes', refresh: 'Refresh', empty: 'No runtime sessions yet.', runtime: 'Runtime', directory: 'Working directory', model: 'Model (optional)', message: 'Message', create: 'Create session', send: 'Send', cancel: 'Stop run', resume: 'Reconnect', events: 'Events', tasks: 'Mission tasks', usage: 'Usage', unknown: 'Not reported', answer: 'Answer', submit: 'Submit answer', raw: 'Provider details', error: 'Request failed', mission: 'Launch Missions from droid_mission in chat. DSH asks for confirmation before each launch.', disconnected: 'Disconnected: reconnect to continue. Messages are never resent automatically.', waiting: 'Waiting for a decision', sessions: 'Sessions', details: 'Runtime session', artifacts: 'Artifacts', nativeNote: 'Native sessions require a parent agent: start them from a runtime tool in chat.', loading: 'Loading…' }
@@ -23,20 +132,21 @@ window.__ModuleLoader__.load({
 @media(max-width:640px){.dsh-runtime-layout{grid-template-columns:1fr}.dsh-runtime-form{grid-template-columns:1fr}}
 `
     const dump = value => JSON.stringify(value, null, 2)
-    async function call(rpc, method, data = {}) {
-      const result = await rpc.call('/api', `agent-runtime.${method}`, data)
+    const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error)
+    async function call<T>(rpc: RpcConnection, method: string, data: object = {}) {
+      const result = await rpc.call<T>('/api', `agent-runtime.${method}`, data)
       if (!result.ok) throw new Error(result.error?.message ?? 'RPC failed')
       return result.value
     }
-    function Decision({ event, rpc, sessionId, t, done, onError }) {
-      const [answers, setAnswers] = React.useState({})
+    function Decision({ event, rpc, sessionId, t, done, onError }: { event: RuntimeEvent; rpc: RpcConnection; sessionId: string; t: Translate; done: () => void; onError: (message: string) => void }) {
+      const [answers, setAnswers] = React.useState<Record<number, string>>({})
       const [busy, setBusy] = React.useState(false)
       const options = event.options ?? event.raw?.options ?? []
       const questions = event.questions ?? event.raw?.questions ?? []
       async function respond(value) {
         setBusy(true)
         try { await call(rpc, 'respond', { sessionId, requestId: event.requestId, answer: event.type === 'permission' ? { selectedOption: value } : value }); done() }
-        catch (error) { onError(error.message) }
+        catch (error) { onError(messageOf(error)) }
         finally { setBusy(false) }
       }
       return h('section', { 'aria-label': t('waiting') }, h('strong', null, t('waiting')),
@@ -49,8 +159,8 @@ window.__ModuleLoader__.load({
           questions.map((question, index) => h('label', { key: index }, question.question, h('textarea', { value: answers[index] ?? '', onChange: e => setAnswers(values => ({ ...values, [index]: e.target.value })), required: true }))),
           h('button', { type: 'submit', disabled: busy || !questions.length || questions.some((question, index) => !(answers[index] ?? '').trim()) }, t('submit'))))
     }
-    function taskRows(session, events) {
-      const tasks = new Map()
+    function taskRows(session: RuntimeSessionRow | null | undefined, events: RuntimeEvent[]): RuntimeTask[] {
+      const tasks = new Map<string, RuntimeTask>()
       for (const event of events) {
         if (event.type !== 'task') continue
         const task = event.task ?? event
@@ -60,52 +170,52 @@ window.__ModuleLoader__.load({
       for (const [id, task] of Object.entries(session?.tasks ?? {})) tasks.set(id, { ...tasks.get(id), ...task, id })
       return [...tasks.values()].map(task => ({ ...task, status: task.state ?? task.status ?? '', dependencies: task.dependsOn ?? task.dependencies ?? [] }))
     }
-    function pendingRequests(session, events, resolved) {
+    function pendingRequests(session: RuntimeSessionRow | null | undefined, events: RuntimeEvent[], resolved: (string | undefined)[]): RuntimeEvent[] {
       if (!session?.activeRunId) return []
       return events.filter(event => ['permission', 'ask-user', 'question'].includes(event.type)
-        && event.runId === session.activeRunId && !event.resolved && !event.expired
+        && event.runId === session?.activeRunId && !event.resolved && !event.expired
         && !resolved.includes(event.requestId)
         && !events.some(later => later.sequence > event.sequence && later.requestId === event.requestId && ['permission-resolved', 'decision'].includes(later.type)))
     }
-    function Panel({ rpc, t }) {
-      const [data, setData] = React.useState({ sessions: [], runtimes: [] })
+    function Panel({ rpc, t }: { rpc: RpcConnection; t: Translate }) {
+      const [data, setData] = React.useState<RuntimeListResult>({ sessions: [], runtimes: [] })
       const [selected, select] = React.useState('')
-      const [events, setEvents] = React.useState([])
-      const [session, setSession] = React.useState(null)
+      const [events, setEvents] = React.useState<RuntimeEvent[]>([])
+      const [session, setSession] = React.useState<RuntimeSessionRow | null | undefined>(null)
       const [error, setError] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [runtime, setRuntime] = React.useState('native')
       const [cwd, setCwd] = React.useState('')
       const [model, setModel] = React.useState('')
       const [text, setText] = React.useState('')
-      const [resolved, setResolved] = React.useState([])
-      const refresh = async () => setData(await call(rpc, 'list'))
+      const [resolved, setResolved] = React.useState<Array<string | undefined>>([])
+      const refresh = async () => setData(await call<RuntimeListResult>(rpc, 'list'))
       React.useEffect(() => {
         let alive = true
         let timer
         async function load() {
           try {
-            const next = await call(rpc, 'list')
+            const next = await call<RuntimeListResult>(rpc, 'list')
             if (alive) { setData(next); setError('') }
             if (selected) {
-              const feed = await call(rpc, 'events', { sessionId: selected, after: 0 })
+              const feed = await call<RuntimeEventsResult>(rpc, 'events', { sessionId: selected, after: 0 })
               if (alive) { setEvents(feed.events ?? []); setSession(feed.session) }
             }
-          } catch (err) { if (alive) setError(err.message) }
+          } catch (err) { if (alive) setError(messageOf(err)) }
           if (alive) timer = setTimeout(load, 2000)
         }
         setEvents([]); setSession(null); setResolved([])
         void load()
         return () => { alive = false; clearTimeout(timer) }
       }, [rpc, selected])
-      async function act(method, payload) {
+      async function act(method: string, payload: object) {
         setBusy(true); setError('')
         try {
-          const result = await call(rpc, method, payload)
+          const result = await call<{ id?: string; session?: { id?: string } }>(rpc, method, payload)
           if (method === 'create') select(result.id ?? result.session?.id ?? '')
           if (method === 'send') setText('')
           await refresh()
-        } catch (err) { setError(err.message) }
+        } catch (err) { setError(messageOf(err)) }
         finally { setBusy(false) }
       }
       const current = session ?? data.sessions.find(row => row.id === selected)
@@ -134,13 +244,13 @@ window.__ModuleLoader__.load({
             h('h4', null, t('artifacts')), events.filter(event => event.type === 'artifact').map(event => h('details', { key: `artifact-${event.sequence}` }, h('summary', null, event.kind ?? event.path ?? 'Artifact'), h('pre', null, event.text ?? event.path ?? dump(event)))),
             h('h4', null, t('events')), events.map(event => h('div', { key: event.sequence, className: 'dsh-runtime-event' }, h('small', null, `${event.sequence} · ${event.type}`), event.text ? h('pre', null, event.text) : null, h('details', null, h('summary', null, t('raw')), h('pre', null, dump(event)))))) : null))
     }
-    function ToolPanel(props) {
+    function ToolPanel(props: { rpc: RpcConnection; t: Translate }) {
       return h('details', { className: 'dsh-runtime' }, h('summary', null, props.t('title')), h(Panel, props))
     }
     return {
       taskRows, pendingRequests,
       inject: ['slots', 'locale', 'connection'],
-      apply(ctx) {
+      apply(ctx: ClientContext) {
         ctx.effect(() => ctx.locale.register(NS, { en, ru, zh }), 'runtime dictionaries')
         ctx.effect(() => { const style = document.createElement('style'); style.textContent = CSS; document.head.append(style); return () => style.remove() }, 'runtime styles')
         const rpc = ctx.get('connection')?.rpc

@@ -11,15 +11,16 @@ async function git(cwd, args) {
 }
 async function apply(cwd, patch, check = false) {
   if (!patch) return
-  await new Promise((resolvePromise, reject) => {
+  await new Promise<void>((resolvePromise, reject) => {
     const child = execFile('git', ['-C', cwd, 'apply', ...(check ? ['--check'] : []), '--binary', '-'],
       { maxBuffer: 1024 * 1024 }, error => error ? reject(error) : resolvePromise())
-    child.stdin.on('error', reject)
-    child.stdin.end(patch)
+    child.stdin?.on('error', reject)
+    child.stdin?.end(patch)
   })
 }
 
 export class Workspaces {
+  directory; locks;
   constructor(directory) { this.directory = directory; this.locks = new Map() }
   async prepare(id, options) {
     const source = await realpath(resolve(options.cwd))

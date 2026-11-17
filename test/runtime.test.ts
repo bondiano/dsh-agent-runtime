@@ -2,19 +2,19 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AgentRuntime } from '../lib/runtime.js'
 
-function fixture(saved = [], overrides = {}) {
+function fixture(saved: object[] = [], overrides: object = {}) {
   let state = structuredClone(saved)
   const store = { load: async () => state, save: async rows => { state = structuredClone(rows) }, artifact: async () => '/local/result.patch' }
   const workspaces = { prepare: async (id, options) => ({ cwd: `/work/${id}`, source: options.cwd, git: true }), acquire: () => () => {}, patch: async () => null }
-  const runtime = new AgentRuntime({ store, workspaces, ...overrides })
+  const runtime = new AgentRuntime({ store, workspaces, question: undefined, ...overrides })
   let calls = 0
-  const adapter = { id: 'fake', capabilities: () => ({ resume: true }), create: async () => ({ id: 'provider' }),
+  const adapter: Record<string, unknown> = { id: 'fake', capabilities: () => ({ resume: true }), create: async () => ({ id: 'provider' }),
     resume: async () => {}, close: async () => {}, getUsage: async () => null,
     async *send() { calls++; yield { type: 'text', text: 'hello' } }, cancel: async () => {} }
   runtime.register(adapter)
   return { runtime, adapter, store, workspaces, calls: () => calls, state: () => state }
 }
-const collect = async stream => { const rows = []; for await (const row of stream) rows.push(row); return rows }
+const collect = async <T,>(stream: AsyncIterable<T>) => { const rows: T[] = []; for await (const row of stream) rows.push(row); return rows }
 
 test('catalog caches adapter models and treats a runtime without a catalog as empty', async () => {
   const { runtime, adapter } = fixture()

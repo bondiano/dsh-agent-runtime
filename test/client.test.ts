@@ -15,7 +15,7 @@ test('client mounts authenticated controls through existing DSH slots', () => {
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   let plugin
   vm.runInNewContext(source, { window: { __ModuleLoader__: { load(bundle) { plugin = bundle.factory(require) } } }, setTimeout, clearTimeout })
-  const slots = []
+  const slots: { meta: Record<string, unknown> & { name: string; inject: () => unknown }; component: unknown }[] = []
   const ctx = {
     effect() {},
     get() { return { rpc: {} } },
@@ -27,7 +27,7 @@ test('client mounts authenticated controls through existing DSH slots', () => {
   }
   plugin.apply(ctx)
   assert.equal(slots.length, 7)
-  const panel = slots.find(slot => slot.meta.name === 'settings.models.footer')
+  const panel = slots.find(slot => slot.meta.name === 'settings.models.footer')!
   const html = renderToStaticMarkup(React.createElement(panel.component, panel.meta.inject()))
   assert.match(html, /aria-label="sessions"/)
   assert.match(html, /<form/)

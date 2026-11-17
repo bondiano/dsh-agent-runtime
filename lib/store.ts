@@ -3,10 +3,14 @@ import { join } from 'node:path'
 
 // One host owns this store. Native transcripts remain in DSH's session store.
 export class RuntimeStore {
+  directory; pending;
   constructor(directory) { this.directory = directory; this.pending = Promise.resolve() }
   async load() {
     try { return JSON.parse(await readFile(join(this.directory, 'sessions.json'), 'utf8')) }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error }
+    catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return []
+      throw error
+    }
   }
   save(sessions) {
     const data = JSON.stringify(sessions)

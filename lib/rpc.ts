@@ -10,7 +10,7 @@ export function fetchRouteFor(method, handler) {
       if (body?.type !== 'client-request' || typeof body.rpcId !== 'string' || body.method !== method) return new Response('Invalid RPC envelope', { status: 400 })
       let result
       try { result = { ok: true, value: await handler(body.payload ?? {}) } }
-      catch (error) { result = { ok: false, error: { code: 'runtime/error', message: error.message } } }
+      catch (error) { result = { ok: false, error: { code: 'runtime/error', message: error instanceof Error ? error.message : String(error) } } }
       return Response.json({ type: 'server-response', rpcId: body.rpcId, result })
     },
   }
