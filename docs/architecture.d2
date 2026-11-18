@@ -1,0 +1,32 @@
+direction: down
+
+apply: "agent-runtime apply\n[TypeScript, cordis]"
+service: "AgentRuntime\n[TypeScript, sessions]"
+machine: "session.machine\n[xstate 5.33]"
+store: "db_runtime_store\n[sessions.json, node fs]"
+workspaces: "Workspaces\n[git worktrees, locks]"
+git: "ex_git\n[CLI, execFile]"
+rpc: "registerRpc\n[POST /api routes]"
+tools: "runtime tools\n[runtime_create, runtime_send]"
+dsh_tools: "DSH tools service\n[inject tools]"
+questions: "userQuestions\n[DSH, ask]"
+prompt: "systemPrompt scope\n[DSH inject]"
+client: "mf_runtime_panel\n[React, client bundle]"
+connection: "connection.fetch\n[DSH RPC channel]"
+slots: "mf_dsh_slots\n[settings.models.footer]"
+adapters: "runtime adapters\n[native, cursor, droid]"
+
+apply -> service: provides agentRuntime
+apply -> questions: mission confirmations
+apply -> prompt: tool guidance section
+service -> machine: session status
+service -> store: load save artifact
+service -> workspaces: prepare patch
+workspaces -> git: worktree add apply
+adapters -> service: register adapter
+rpc -> service: list create send
+rpc -> connection: fetch.register routes
+tools -> service: execute operations
+tools -> dsh_tools: ctx.tools.register
+client -> connection: rpc.call agent-runtime
+client -> slots: register panels
