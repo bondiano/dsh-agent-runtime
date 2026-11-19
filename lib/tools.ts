@@ -22,7 +22,7 @@ const definition = (name, description, properties, required, execute) => ({ name
 
 export function runtimeTools(service, ctx) {
   const context = exec => ({ parent: exec.agent, signal: exec.signal })
-  const settings = { runtime: { type: 'string', enum: ['native', 'cursor', 'droid'] }, cwd: string, model: string, provider: string,
+  const settings = { runtime: { type: 'string', enum: ['native', 'cursor', 'droid', 'antigravity'] }, cwd: string, model: string, provider: string,
     onlyTools: { type: 'array', items: string, minItems: 1 }, autonomy: { type: 'string', enum: ['off', 'low', 'medium', 'high'] } }
   const tools = [
     definition('runtime_create', 'Create an isolated runtime session. runtime defaults to native. Use runtime_send to begin.', settings, ['cwd'], (args, exec) => service.create(args, context(exec))),
@@ -31,7 +31,7 @@ export function runtimeTools(service, ctx) {
       { sessionId: string, text: string, context: string, constraints: { type: 'array', items: string }, artifacts: { type: 'array', items: string, maxItems: 10 } },
       ['sessionId', 'text'], (args, exec) => runToEnd(service, args.sessionId, args, context(exec))),
     definition('runtime_list', 'List runtime capabilities and sessions.', {}, [], () => service.list()),
-    definition('runtime_models', 'List the model ids one agent runtime advertises. Use them as runtime_create model values.', { runtime: { type: 'string', enum: ['cursor', 'droid'] } }, ['runtime'], async args => {
+    definition('runtime_models', 'List the model ids one agent runtime advertises. Use them as runtime_create model values.', { runtime: { type: 'string', enum: ['cursor', 'droid', 'antigravity'] } }, ['runtime'], async args => {
       const { models } = await service.catalog(args.runtime)
       return { runtime: args.runtime, models,
         text: models.length === 0 ? `${args.runtime} advertises no models` : models.map(model => `${model.id}${model.name && model.name !== model.id ? ` — ${model.name}` : ''}`).join('\n') }
